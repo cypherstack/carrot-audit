@@ -1,0 +1,793 @@
+\documentclass{article}
+\usepackage{graphicx,amsmath,amsthm,amsfonts,amssymb,fullpage,color,tikz,pgfplots,multirow,multicol,bbold,url,hyperref,wrapfig,csquotes}
+
+\usepackage[operators,sets]{cryptocode}
+\setlength\parindent{0pt}
+
+\title{An Audit of the FCMP++ Addressing Protocol: \carr}
+
+\author{Freeman Slaughter, Brandon Goodell, Rigo Salazar, $\sf{Cypher \ Stack}$\thanks{\url{https://cypherstack.com}}}
+\date{November 22, 2024}
+
+
+\pgfplotsset{compat=1.18}
+
+\theoremstyle{definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+\newtheorem{problem}{Problem}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{assumption}{Assumption}
+
+\def\do#1{\csdef{#1}{\mathbb{#1}}}
+\docsvlist{N,Z,Q,R,F,G}
+
+\def\do#1{\csdef{#1}{\mathcal{#1}}}
+\docsvlist{E,A,H,M,R,C,S}
+
+\def\do#1{\csdef{#1}{\mathsf{#1}}}
+\docsvlist{DLP}
+
+\newcommand{\Fp}{\mathbb{F}_p}
+\newcommand{\Fq}{\mathbb{F}_q}
+\newcommand{\Fpm}{\mathbb{F}_{p^m}}
+\newcommand{\Fqn}{\mathbb{F}_{q}^n}
+\newcommand{\Fpmn}{\mathbb{F}_{p^m}^n}
+\DeclareMathOperator{\conv}{conv}
+\newcommand{\srw}[1]{{\text{srw}\left(#1\right)}}
+\newcommand{\rank}[1]{{\text{rank}_{\mathbb{F}_q}(#1)}}
+\newcommand{\iso}[1]{{\text{Iso}(#1)}}
+\newcommand{\6}{\mathbf}
+\newcommand{\7}{\mathcal}
+\newcommand{\rar}{\rightarrow}
+\newcommand{\lar}{\leftarrow}
+\newcommand{\lsamp}{\xleftarrow{\$}}
+\newcommand{\map}{\mapsto}
+\newcommand{\til}[1]{{\widetilde{#1}}}
+\newcommand{\todo}[1]{\textcolor{red}{#1}}
+\newcommand{\hsh}[1]{\text{Hash}{(#1)}}
+\newcommand{\one}{\mathbb{1}}
+\newcommand{\rk}[1]{{\text{rank}(#1)}}
+\newcommand{\deter}[1]{{\text{det}(#1)}}
+\newcommand{\wt}[1]{{\text{wt}(#1)}}
+\newcommand{\tr}[1]{{\text{tr}(#1)}}
+\newcommand{\supp}[1]{{\text{supp}(#1)}}
+\newcommand{\com}[1]{{\mathsf{commit}(#1)}}
+\newcommand{\comm}[1]{{\mathsf{commit2}(#1)}}
+\renewcommand\epsilon\varepsilon
+\renewcommand{\line}[1]{{\text{Section }$8.1$\text{, line }#1}}
+\newcommand{\sect}[1]{{\text{Section }#1}}
+\newcommand{\secr}[1]{{\mathsf{SecretDerive}(\sf{#1})}}
+\newcommand{\scal}[1]{{\mathsf{ScalarDerive}(\sf{#1})}}
+\renewcommand{\sf}[1]{{\mathsf{#1}}}
+\newcommand{\sfb}[1]{{\mathsf{\mathbf{#1}}}}
+\newcommand{\carr}{$\sf{CARROT}$ }
+
+\setcounter{tocdepth}{4} 
+\setcounter{secnumdepth}{4}
+
+
+\begin{document}
+
+
+
+\maketitle
+
+In this document, we audit the framework of \carr (Cryptonote Address on Rerandomizable-RingCT-Output Transactions). \carr is an addressing protocol, intended to be compatible with the FCMP++ (Full Chain Membership Protocol + Spend Authorization + Linkability) upgrade that is coming to Monero. The specification document can be found at \url{https://github.com/jeffro256/carrot/blob/master/carrot.md} 
+\medskip 
+
+
+
+This scheme is intended to patch two potential vulnerabilities in the FCMP protocol, namely the burning bug and Janus attack, which we discuss in greater detail in subsequent sections, while still remaining compatible with the current addressing protocol. 
+\carr introduces new security models intended to give the user more concrete security guarantees, such as a novel key hierarchy, while supporting indistinguishability to another addressing protocol $\sf{Jamtis}$.
+
+
+
+
+\tableofcontents
+
+
+
+
+
+
+\section{Introduction} 
+
+Monero is a privacy-oriented cryptocurrency based on the 2013 CryptoNote v2 whitepaper \cite{CryptoNote} that offers many strong secrecy guarantees; indeed, no third party can efficiently reveal transaction addresses, amounts, or records. 
+At times, Monero implements protocol upgrades in order to better serve their customer base and make sure that security is as tight as possible. 
+In this document, we audit a potential future Monero upgrade \carr and find that it is well-suited to patch two main vulnerabilities: the burning bug, where a malicious user could force an unsuspecting victim to throw away funds, and the Janus attack, where a curious adversary armed with public information about a known address could reveal that a user has ownership of a private address. 
+Additionally, we find that \carr obtains desirable features such as unlinkability, forward secrecy, and indistinguishability. 
+While we do present suggestions to improve upon the protocol, largely we support $\sf{CARROT}$'s security claims, and believe it is well-suited for its intended purpose as an improvement to the Monero protocol.  
+
+
+
+ 
+ \subsection{Executive Summary}
+
+Here, we collect a concise summary of our security findings.
+\medskip 
+
+We were able to verify the security claims for completeness and binding, various unlinkability conditions, forward secrecy, and indistinguishability of values, as well as 
+burning bug resistance and Janus attack resistance, where an adversary who can perform these attacks at-will can either efficiently find hash collisions or break the discrete logarithm problem, which we assume are computationally intractable - see Section \ref{sec:preliminaries} for a formal security overview. 
+However, we believe that some of the statements for these security conditions could be made more exacting, such as upgrading the initial discrete logarithm to a Pedersen commitment for Transaction Output Random Indistinguishability in Section \ref{TORI}. 
+This is a stronger statement, and fits more in line with the condition that the authors of \carr wish to show.
+\medskip 
+
+Beyond some slight typos or mislabeling, we recommended certain actions be taken: for instance, the specification document would benefit from an in-depth discussion about key clamping - or lack thereof - since this concept is related to efficient implementation and confinement attack prevention. 
+For a complete list of recommendations, navigate to Section \ref{sec:comments}.
+
+
+
+
+
+\subsection{Background}\label{sec:background}
+
+Monero is slated to adopt Seraphis \cite{Seraphis}, which is a peer-to-peer electric currency protocol based on the RingCT (Ring Confidential Transactions) \cite{ZtoM} paradigm, and which uses extremely efficient building blocks, like \cite{Bullet,Bullet+}. 
+Seraphis will enable much larger RingCT sizes, but is not backwards compatible with existing CryptoNote addresses.
+As such, the Monero Research Lab (\url{https://www.getmonero.org/resources/research-lab/}) views this as an auspicious opportunity to upgrade the current addressing protocol in order to improve key features and mitigate potential security problems.
+For an informal writeup of Seraphis, as well as its progenitor Triptych \cite{Triptych}, which was an upgrade to CLSAG (Concise Linkable Spontaneous Anonymous Group) signatures \cite{CLSAG,MoneropediaCLSAG}, which itself was an upgrade from MLSAG (Multilayered Linkable Spontaneous Anonymous Group) signatures \cite{MLSAG}, we refer the interested reader to \cite{WhatIsSeraphis}. 
+We note that Seraphis shares many features with Lelantus Spark \cite{Lelantus,Spark}, a Firo protocol \cite{FiroLelantus}. 
+Despite being quite similar, Seraphis is strictly more efficient, as it uses a succinct version of ``Grootle" proofs (\cite{Groth} and \cite{Bootle}).
+\medskip 
+
+
+
+One option for a new addressing scheme is Jamtis \cite{Jamtis}, which is tailor-made to be compatible with Seraphis. 
+This protocol is intended to fix various potential issues with CryptoNote, such as divulging too much wallet information during third-party scanning and linking wallets via Janus attack - this will be discussed in greater depth in Section \ref{sec:janus}. The addressing protocol \carr which we discuss in this document is distinct from Jamtis, though is designed to be indistinguishable from it, and they share some security features.
+\medskip 
+
+
+
+
+\subsubsection{FCMP++}\label{sec:fcmp}
+
+FCMP++ \cite{FCMP} is a double-upgrade to the original Full-Chain Membership Proofs, adding on + Spend Authorization and + Linkability, intended as a replacement to Monero's ring signatures, thus detaching Monero from its reliance on Seraphis.  
+A few notable improvements over ring signatures are that FCMP++ is resistant to EAE attacks \cite{BreakingMoneroEAE}, it has greater resiliency against naive statistical analysis, and it uses an anonymity set that is many orders of magnitude larger ($\sim$ 5,000,000x larger) \cite{FCMPDev}.
+As a historical aside, two distinct protocols were suggested for Monero under the name FCMP: the first \cite{FCMP1} was proposed to deploy alongside Seraphis, while the second \cite{FCMP} was intended to move the paradigm away from Seraphis. 
+Here, we mean the second, and will refer to it throughout this document as FCMP++ without ambiguity. 
+For more background on FCMP as well as future directions, we refer the interested reader to \cite{CurveTrees,EllipticCurve,DiscLog,FCMPRetro,FCMPCCS}.
+\medskip 
+
+
+
+\medskip 
+
+
+
+
+\carr is the potential addressing protocol for Monero that we focus on in this manuscript, which layers on top of FCMP++ by defining the ruleset for addressing and sending funds, while the underlying FCMP++ defines how to validate transactions.
+This addressing protocol is intended to be practically indistinguishable from Jamtis, and moreover, the new addresses it generates are required to be computationally indistinguishable from legacy addresses. 
+Naturally, \carr also comes with backwards compatibility, so users with legacy CryptoNote addresses are not excluded from the new hierarchy.
+\carr offers security features like burning bug resistance, unlinkability, indistinguishability, and forward secrecy through the use of dedicated outgoing view keys and RingCT Rerandomization abstraction.
+
+
+
+
+
+
+\subsection{Undesirable Vulnerabilities}
+
+In this section, we highlight two attack vectors that appeared as artifacts of the legacy enote scanning process: the burning bug \cite{BurningBug} and the Janus attack \cite{Janus}. 
+
+
+
+
+
+\subsubsection{Burning Bug}\label{sec:burning}
+
+The burning bug \cite{BurningBug} is named for the outcome of the vulnerability, where a user is tricked into ``burning" the funds in an enote. 
+Specifically, in Monero's legacy scan process, a malicious sender can copy an existing transaction using some of the same public key information, then send this poisoned enote to a receiver. 
+This recipient will successfully scan both enotes, but because key images are generated from the output public keys, and repeat key images are not permitted, they will only be able to spend the first one scanned - thus the other is burned.
+This malicious user can copy a legitimate enote and create a tainted 
+enote corresponding to an amount of 0 moneroj, so that if the receiver spends this poisoned enote first, then the funds in the original one will be inaccessible. 
+This comes at a nominal 
+cost for the malicious user, but could potentially be quite damaging to an unsuspecting recipient.
+\medskip 
+
+
+Originally, a patch for this issue was quietly issued as a source code pull request \cite{BurningBugPatch}, and exchange services were notified. 
+This initial patch simply warned users of suspected burning bug enotes with a warning message, as opposed of somehow preventing its occurrence in the first place. 
+Later patches dealt with this by recognizing the burning bug's poisoned enote clique, then discarding duplicate enotes unless they corresponded to the greatest transactional amount in the clique.
+Unfortunately, these workarounds were rather delicate, and required a user to have knowledge of the record of all previous enote scans in the chain.
+
+\medskip 
+
+Jamtis, one of the first protocols to prevent burning bugs, achieved this by ``baking an $\sf{input\_context}$ into enotes" \cite{ImplemetingSeraphis}, forcing burning bug attackers to solve a computationally intractable problem.
+We note that this isn't the only method of preventing the burning bug attack \cite{BurningBugKayaba}.
+Seraphis attempted to address this by requiring uniqueness of the the enote's ephemeral public key $\sf{D_e}$ (see \cite[Section 8.2.2]{ImplemetingSeraphis}), which is generally computed from the receiver’s address key.
+
+\carr solves this problem in a similar manner to Jamtis, by binding output public keys to the value $\sf{input\_context}$; uniqueness then follows from consensus rules in the chain, so inspecting previous enote scanning history is not required. 
+
+
+
+
+
+
+
+
+\subsubsection{Janus Attack}\label{sec:janus}
+
+The Janus attack is an identifying attack, aimed at discerning whether or not two addresses belong to the same wallet \cite{Janus,BreakingMoneroJanus}.
+The name Janus refers to the two-faced Roman deity representing duality, new beginnings, and doorways, loaning us the name of the month ``January" and the occupation ``janitor," among others.
+The duality in this vulnerability is that two different addresses can potentially be linked to the same wallet by a user.
+As a linguistic aside, we tongue-in-cheek propose that the Janus attack for Monero should be referred to as the ``pordo" attack, from the Monero word for door!
+\medskip 
+
+In CryptoNote, the balance recovery is split into two parts: using the view key with ECDH (elliptic curve Diffie Hellman) to create a shared secret, then using this shared secret to recover the spend key \cite{CryptoNote}. 
+As the two constituent sub-processes are implemented separately, both parts can come from alternate subaddress, hence a curious - but not necessarily malicious - user can create an enote using a subaddress that they believe is owned by a recipient, but that appears to be sent to their public address.
+When this recipient confirms that their public address received the enote, then they inadvertently confirm that the putatively owned address subaddress belongs to them. 
+\medskip 
+
+Suppose that a victim has a public address $P$ and a secret address $S$. An adversary knows that this individual owns address $P$, but suspects they also own $S$. To duplicitously authenticate this suspicion, they construct a transaction using only public information about $S$, but that the victim will view as being sent to address $P$. When the victim naively confirms the transaction from address $P$ with a receipt, the adversary then has confirmation that the victim owns address $S$.
+\medskip 
+
+
+This issue was patched in Jamtis by permitting users to recognize Janus output \cite{Jamtis}. 
+The 3-key variant of Jamtis provides protection against Janus as well as improve the third party enote scanning process, since they are related concepts.
+Using a similar concept in the burning bug mitigation, Jamtis prevents Janus attacks by baking the subaddress index $\sf{j}$ into the ECDH shared secret (specifically the second secret $\sf{s_{2}^{sr}}$; see \cite[Section 8.4.3]{ImplemetingSeraphis} for more details), thus connecting Janus attack prevention to solving a hard problem. 
+We note that this is not the only method of patching this vulnerability \cite{JanusMitigation}.
+\medskip 
+
+\carr addresses this issue by introducing a Janus anchor, aptly named ``$\sf{anchor}$," which is used to rederive an enote's ephemeral private key $\sf{d_e}$ and verify the ephemeral public key $\sf{D_e}$. 
+The $\sf{anchor}$ is (usually, see \cite[Section 7.4]{Carrot} for details) a uniformly random 16-byte array that is then encrypted by XORing with a random encryption mask.
+This value guarantees that either Janus attacks are prevented, or the sender knows the private view key $\sf{k_v}$. In this second case, there is no need for Janus output, as they can easily determine if two addresses are in the same wallet. 
+Additionally, the view tag $\sf{vt}$ has the $\sf{input\_context}$ baked into it, so that a third party cannot simply copy values into a new enote, as then the view tag will only match if a hash collision has been found, which we assume occurs with negligible probability due to collision resistance. 
+
+
+
+
+
+
+
+
+
+\subsection{Preliminaries}\label{sec:preliminaries} 
+
+
+
+\subsubsection{Notation}
+For this manuscript, we denote honest elements like $t$ and dishonest, corrupted, or proxy values as $\6t$. So a sender might attempt to send a receiver $t$, but it's intercepted by an adversary, and this malicious party sends the receiver $\6t$; separately, if two senders are interacting with the same receiver, one would send $t$ and the other $\6t$. We also denote $t'$ as the receiver's attempted reconstruction of the sender's $t$ from the limited information available to them. We reserve the notation $r \xleftarrow{\$} S$ to mean that the element $r$ has been sampled uniformly at random from the set $S$.
+\medskip 
+
+When context is clear, we suppress hash input domain-separating tags in our notation. 
+This is for brevity and pedagogical reasons solely, and is not good practice on the implementation side, so please take care when reading this document. 
+As an example, if the hash in question is something like
+$$\secr{\sf{domain\_separating\_tag} \ || \ \sf{important\_stuff}},$$
+we simply write $\secr{\sf{important\_stuff}}$.
+We suppress this input because when it comes to hash padding, we just don't $\sf{CARROT}$-all.
+\medskip 
+
+
+
+
+
+\subsubsection{Adversary Capabilities}
+
+Some hard problems we highlight are the discrete log problem, the Diffie-Hellman problem, and the problem of finding hash collisions. We assume that these are intractable for a computationally bound adversary. The supposed difficulty of these problems (ie: the security level at practical parameters, expected time for generic attacks like Pollard's rho algorithm \cite{PollardRho} or the general number field sieve \cite{NumberFieldSieve}, etc.) should be stated somewhere in the \carr documentation (see comment 5 in Section \ref{sec:comments}). 
+\medskip
+
+
+To introduce the notions of security more formally, suppose we have access to a public group-generator algorithm $\mathsf{GGen}$ that accepts input $\one^\lambda$,
+where $\lambda$ is the security parameter. This algorithm outputs a description of the group $\G$, which has prime order $p$, as well as generator $g \in \G$ if needed. We denote the field of $p$ elements as $\Fp$. A \textit{negligible} function is simply a function $f$ such that $|f(x)|$ decays faster than the reciprocal of any polynomial of $x$, for $x$ large enough.
+
+\begin{problem}[Discrete Logarithm Problem]\label{prob:DLP}
+    The discrete logarithm problem is:
+    $$\text{given input } \{(g, \, g^{\alpha}) \, | \, (\G, \, p, \, g) \lar \mathsf{GGen}(\one^\lambda), \, \alpha \lsamp \Fp\} \text{, recover } \alpha.$$ 
+\end{problem}
+
+
+\begin{definition}\label{def:extractor}
+    We let $\E$ denote a hypothetical extractor algorithm which can break Assumption \ref{ass:DLP} with impunity. That is, $\E$ can accept input $(g, \, g^{\alpha})$ and efficiently extract $\alpha$ for any values of $g$ and $\alpha$.
+\end{definition}
+
+\begin{assumption}\label{ass:DLP}
+    We assume that the discrete logarithm problem is hard; specifically, that the following advantage is bounded by some negligible function for all probabilistic, polynomial-time adversaries $\A$:
+    
+    $$ \text{Pr}[\A (g, \, g^{\alpha}) = \alpha \, | \, (\G, \, p, \, g) \lar \mathsf{GGen}(\one^\lambda), \, \alpha \lsamp \Fp] \leq \mathsf{negl}(\lambda)$$
+\end{assumption}
+
+
+
+\medskip
+
+The security of the next problem relies on Assumption \ref{ass:DLP}, in that if one can efficiently solve the discrete logarithm problem, then they can solve Problem \ref{prob:DHP} below. This assumption is necessary because a Diffie-Hellman key exchange occurs in \carr to compute the private view key. This exchange happens exclusively on the Montgomery elliptic curve, Curve25519 \cite{Montgomery}. 
+
+
+
+\begin{problem}[Decisional Diffie-Hellman Problem]\label{prob:DHP}
+    The decisional Diffie-Hellman problem is:
+    $$\text{given input } \{(g, \, g^{\alpha}, \, g^{\beta}, \, g^{\gamma}) \, \big| \, (\G, \, q, \, g) \lar \mathsf{GGen}(\one^\lambda), \, \alpha, \beta, \gamma \lsamp \Fp\}  \text{, determine if } \gamma = \alpha\beta.$$ 
+\end{problem}
+
+If this problem were to instead ask the adversary to compute $g^{\alpha\beta}$ given $g^{\alpha}$ and $ g^{\beta}$, this would be the \textit{computational} Diffie-Hellman problem. We elected to go with the decisional variant here, because it's the ``harder" problem, in the sense that if an algorithm exists to solve the computational variant, then it can also solve the decisional variant.
+
+\medskip
+
+This next assumption states that an adversary cannot determine if a given point is part of a Diffie-Hellman key exchange or if it's simply randomly selected, with any probability greater than by chance.
+
+\begin{assumption}[Diffie-Hellman Assumption]\label{ass:DHA}
+    We say that the decisional Diffie-Hellman assumption holds if for all probabilistic, polynomial-time adversaries $\A$, the following advantage is negligible: 
+
+\begin{align*}
+    & \Biggl|\text{Pr}\Bigl[\A (g, \, g^{\alpha}, \, g^{\beta}, \, g^{\alpha\beta}) = 1 \, \Big| \, (\G, \, q, \, g) \lar \mathsf{GGen}(\one^\lambda), \, \alpha, \beta \lsamp \Fp \Bigr] \\
+    &\quad- \text{Pr}\Bigl[\A (g, \, g^{\alpha}, \, g^{\beta}, \, g^{\gamma}) = 1 \, \Big| \, (\G, \, q, \, g) \lar \mathsf{GGen}(\one^\lambda), \, \alpha, \beta, \gamma \lsamp \Fp\Bigr] \Biggr| \leq \mathsf{negl}(\lambda)
+\end{align*}
+\end{assumption}
+\medskip 
+
+
+
+For the purposes of $\sf{CARROT}$, we require a hash function $\H$ to be \textit{collision resistant}, meaning that it should be difficult for an adversary to find distinct messages $m_1$ and $m_2$ such that $\H(m_1)=\H(m_2)$.
+
+\begin{assumption}[(Strong) Collision Resistance]\label{ass:CR}
+    We assume that finding hash collisions is hard; that given a message space $\M=\{0, \, 1\}^k$ of length $k$ and a hash function $\H:\M \rar \{0, \, 1\}^n$, the following advantage is bounded by some negligible function for all probabilistic, polynomial-time adversaries $\A$:
+    $$ \text{Pr}[ \H(m_1)=\H(m_2) \text{ but } m_1 \neq m_2 \, | \, \A (\one^\lambda) \rar (m_1, \, m_2) \in \M^2 ] \leq \mathsf{negl}(\lambda)$$
+\end{assumption}
+
+We also require preimage resistance, which is distinct from and not implied by collision resistance, which states that it's difficult to calculate preimages. 
+
+\begin{assumption}[(First) Preimage Resistance]\label{ass:PR}
+    We assume that finding a hash's preimage is hard; that given a message space $\M=\{0, \, 1\}^k$ and a hash function $\H: \M \rar \{0, \, 1\}^n$, the following advantage is bounded by some negligible function for all probabilistic, polynomial-time adversaries $\A$:
+    $$ \text{Pr}[ \A(h, \, \one^\lambda) = m \, | \, h = \H(m) \text{ for } m \lsamp \M ] \leq \mathsf{negl}(\lambda)$$
+\end{assumption}
+
+\medskip 
+
+We also recall properties of Pedersen commitments.
+
+\medskip 
+
+Formally, a commitment scheme is defines as two parts: the first is an efficient randomized setup algorithm $\mathsf{CGen}$ which generates a commitment $\sf{c}$, then also defines the message space $\M$, a randomness space $\R$, and a commitment space $\C$. 
+We let $\sf{pp}$ denote public parameters, generated from $\mathsf{CGen}(\one^\lambda)$, where $\lambda$ is some security parameter. 
+The commitment function $\mathsf{Com}: \M \times \R \rar \C$ uses a message and randomness to formulate a commitment. For a message $m \in \M$, the randomness $r \xleftarrow{\$} \R$ is selected uniformly, then the commitment is formed by $c := \mathsf{Com}(m, \, r)$.
+
+
+
+
+\begin{definition}[Hiding]\label{def:hiding}
+    We say that a commitment scheme $(\mathsf{CGen}, \,\mathsf{Com})$ is \textit{computationally hiding} if it is infeasible to determine the secret message $m$ from $\mathsf{Com}(m, \, r)$.
+    This is, for every probabilistic, polynomial-time adversary $\A$, the following holds:
+    
+    $$\left|\begin{array}{c}
+    \text{Pr}\left[ \begin{array}{l|l}
+      & \sf{pp} \lar \mathsf{CGen}(\one^\lambda) \\
+      & m_1, \, m_2 \lar \M \\
+      \A(c)=b & b \lsamp \{1, \, 2\} \\ 
+       & r \lsamp \R \\
+     & c := \mathsf{Com} (m_b, \, r)
+    \end{array} \right] - \frac{1}{2} 
+    \end{array} \right| \leq \sf{negl}(\lambda)$$
+
+    If this probability is exactly $\frac{1}{2}$ for all $\A$, then we say the scheme is \textit{perfectly} hiding. 
+\end{definition}
+\medskip
+
+
+
+\begin{definition}[Binding]\label{def:binding}
+    We say that a commitment scheme $(\mathsf{CGen}, \,\mathsf{Com})$ is \textit{computationally binding} if 
+    the probability of finding $(m_1, \, r_1) \neq (m_2, \, r_2)$ such that $\mathsf{Com}(m_1, \, r_1) = \mathsf{Com}(m_2, \, r_2)$ is very low. This is, for all polynomial-time adversaries $\A$:
+    $$\text{Pr}\left[ \begin{array}{l|l}
+      & \sf{pp} \lar \mathsf{CGen}(\one^\lambda) \\
+      c_1 = c_2 & (m_1, \, r_1, \, m_2, \, r_2) \lar \A(\sf{pp}) \text{ with } m_1 \neq m_2 \\
+      & c_i = \mathsf{Com}(m_i, \, r_i) \text{ for } i=1,2 \\
+    \end{array} \right] \leq \sf{negl}(\lambda)$$
+
+    If this probability is exactly $0$ for all $\A$, then we say the scheme is \textit{perfectly} binding.
+\end{definition}
+\medskip
+
+Both of the above definitions assume a computationally bounded adversary; if we remove the ``polynomial-time" condition on the adversary, then the definitions are \textit{statistical} hiding and binding. 
+Recall that the discrete log problem is only \textit{computationally} hiding.
+\medskip 
+
+The most common commitment scheme used for zero-knowledge protocols is the Pedersen commitment, which relies on the hardness of the discrete logarithm problem. 
+Pedersen commitments are used in many popular cryptocurrencies such as Monero \cite{MLSAG}, Pinocchio coin \cite{PinocchioCoin}, and Firo (then known as Zcoin) \cite{ZcoinWhitepaper},
+and additionally finds use in other frameworks like Zether \cite{Zether}, Pretty Good Confidential \cite{PGC}, and MERCAT \cite{MERCAT}. 
+The Pedersen commitment takes the form $\mathsf{Com}(m, \, r) = mG + rH$, with $r\xleftarrow{\$} \R$ and $m \in \M$, where $G$ and $H$ are a generators of group $\G$ specified in $\sf{CGen}$.
+The above commitment is in additive notation, which is what we use throughout this document, but other authors prefer multiplicative notation, which takes the form $\mathsf{Com}(m, \, r) = g^m h^r$.
+Pedersen commitments are perfectly hiding, due to the fact that $r$ is taken as a uniformly random value \cite{Zecrey,QuantumOneWay}. 
+On the other hand, breaking the binding property is in fact equivalent to extracting discrete logarithms, which we assume cannot be done efficiently. 
+Finally, Pedersen commitments enjoy the homomorphic property, which states that $\mathsf{Com}(m_1, \, r_1) + \mathsf{Com}(m_2, \, r_2) = \mathsf{Com}(m_1+m_2, \, r_1+r_2)$, in additive notation. 
+\medskip 
+
+For more background on these definitions and their use-cases, we cite \cite{CoinFlipping,Marvinthesis,ArithCurcuits,Bullet,Bullet+,Bullet++,RingSigs}.
+
+\medskip 
+
+For this document, we presume that the discrete log problem is hard on the two curves implemented in $\sf{CARROT}$, the Montgomery curve \cite{Montgomery} and the twisted Edwards curve \cite{Edwards}, meaning that the adversarial advantage in Assumption \ref{ass:DLP} is negligible for all probabilistic polynomial-time adversaries. 
+We also take it as fact that Assumption \ref{ass:DHA}, the Diffie-Hellman assumption, holds for both curves, meaning that an adversary cannot in general determine if a value is a Diffie-Hellman key or simply random.
+Additionally, we suppose that the hash functions used here, Blake2b \cite{Blake} and Keccak \cite{Keccak}, enjoy collision resistance from Assumption \ref{ass:CR} and preimage resistance from Assumption \ref{ass:PR}. 
+We also take it as a given that all Pedersen commitments, which in \carr occur over the twisted Edwards curve \cite{Edwards}, are hiding and binding, from Definition \ref{def:hiding} and Definition \ref{def:binding} respectively.
+\medskip 
+
+
+These next definitions are presented in full abstraction, but make the most sense when applied later on in Section \ref{sec:proofs} of this document. We present them here for completeness.
+
+\begin{definition}\label{def:indist}
+    Let $\S$ and $\Delta$ be two distribution algorithms which accept security parameter $\lambda$ as input. We say that these algorithms are \textit{indistinguishable} if, for any non-uniform, probabilistic, polynomial-time adversary $\A$, the following advantage is negligible
+    $$\Big| \text{Pr}[\A (x) = 1 \, | \, x \lar \S(\one^\lambda)] - \text{Pr}[\A (x) = 1 \, | \, x \lar \Delta(\one^\lambda)] \Big| \leq \mathsf{negl}(\lambda)$$
+\end{definition}
+
+In Section \ref{sec:proofs}, we take $\S$ to be a simulator algorithm which simulates the transcript of a valid \carr interaction, and $\Delta$ to be a randomized algorithm which selects parameters uniformly at random from their respective sample spaces. This permits us to make claims such as ``the ephemeral public key of a \carr interaction is indistinguishable from a random point on the Montgomery curve," as the probability ensembles do not permit an adversary to distinguish with any probability greater than sheer chance.
+\medskip
+
+\begin{definition}\label{def:forward}
+    We say that an encryption protocol obtains \textit{forward secrecy} if inspection of the key agreement transcript in plaintext does not permit decryption of the remainder of the data.
+\end{definition}
+
+Less formally, this states that if a single old key is compromised, then the remainder of the newer keys which were derived from it remain protected \cite{ForwardSec}. The purpose of this definition becomes more clear in Section \ref{sec:proofs}, where it enables us to make claims like ``even if certain keys are compromised, an attacker cannot break the \carr protocol."
+
+
+
+
+
+
+
+\section{Recommended Action}\label{sec:comments}
+
+In this section, we outline some comments and suggestions for the \carr spec document. In no way are these intended to be mandatory changes, we simply outline improvements that we believe can increase readability, exactness, and operability.
+
+\begin{enumerate}
+    \item In \sect{7.3.5} the $\sf{anchor}$ is set to an ``HMAC" of the ephemeral key $\sf{D_e}$ in special enotes, which can then be authenticated with private view key $\sf{k_v}$. We do not find that this fits the technical definition of an HMAC (see FIPS 198-1, \url{https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.198-1.pdf}). The $\sf{anchor_{sp}}$ is defined in \sect{7.4.1} as $\secr{\sf{D_e} \ || \ \sf{input\_context} \ || \ \sf{K_o} \ || \ \sf{k_v} \ || \ \sf{K_s}}$, which does not strictly fit the criteria for an HMAC as defined below. 
+    \medskip 
+
+    An HMAC of message $\sf{m}$ with secret key $\sf{k}$ as defined in a 1997 RFC by Bellare, Canetti, and Krawczyk (\url{https://www.rfc-editor.org/rfc/pdfrfc/rfc2104.txt.pdf}) looks like 
+    \begin{align*}
+        \sf{HMAC(m, \, k)} &= \sf{H \Bigl( h \oplus out\_pad \ \ || \ \ H \bigl( h \oplus in\_pad \ \ || \ \ m \bigr) \Bigr)} \\ 
+        \sf{h} &= 
+        \begin{cases}
+            \sf{H(k)} & \text{if}\ \sf{k} \text{ is longer than block size} \\
+            \sf{k} & \text{ else}
+        \end{cases}
+    \end{align*}
+    where $\sf{in\_pad}$ and $\sf{out\_pad}$ are padding of repeated values.
+ 
+    So, we find that $\sf{anchor_{sp}}$ is a MAC with secret view key $\sf{k_v}$ and not an HMAC, though could be redefined into one at the cost of an additional hash. We do not expect this will confer major security benefits, and would likely slow down the protocol. 
+    We point out that common argument for the use of HMACs is protection against length extension attacks - Blake2b \cite{Blake} and Keccak \cite{Keccak} enjoy this protection for free, so $\sf{ScalarDerive}$ and its legacy version are not susceptible to length-extension attacks.
+
+
+    \item In \sect{7.4.1} the padding for $\sf{m_{anchor}}$ should read ``$\sf{jamtis\_encryption\_mask\_anchor}$" in our opinion, not ``$\sf{jamtis\_encryption\_mask\_j}$," as $\sf{j}$ is the subaddress index, which the anchor does not rely on. There is a typo in Section 1.3, where one paragraph claims ``unconditional forward secrecy" and the other claims ``conditional forward secrecy."
+
+    \item In \sect{7.4.2} the view tag $\sf{vt}$ is defined as the hash of $\sf{s_{sr}}$, $\sf{input\_context}$, and $\sf{K_o}$. Yet in \sect{7.3.4} it's mentioned that for efficient scanning purposes, $\sf{vt}$ is truncated - only the first few bytes are communicated. This should be made clear in definition.
+
+    \item In \sect{8.1}, readers benefit from explicitly labeling data, so it is clear which information is public or private, known only to the sender or the receiver, etc.
+    While this would assist with readability of the protocol, it would also clarify what information is only available to which party, which would allow an interested reader to work though the protocol themselves. 
+
+    \item In \line{31 - 33} are repeats of 27 - 29, so we suggest combining them into a single if-else statement. While this is not strictly necessary, but it may improve readability of the scanning process.
+
+    \item We would welcome a paragraph in the intro explaining what hard problems the security of this protocol relies on, what properties we assume our hash functions have, what security factor we take in practice, etc. What about computational vs unconditional vs perfect hiding, and similarly for binding? What capabilities does our idealized adversary have? At practical parameters, what is the expected runtime for generic algorithms like Pollard's rho \cite{PollardRho} or the general number field sieve \cite{NumberFieldSieve}?
+
+    \item We recommend more be said about clamped keys, for instance by formalizing \sect{9.4.2}, since clamped keys are common for X25519 and Ed25519. Clamped keys are connected to non-constant-time implementation and guarding against small subgroup attacks. It should also be pointed out that without clamping, keys can only be referred to as indistinguishable from other keys, instead of from random values. This can be dealt with by using Elligator \cite{Elligator,ElligatorOrg} to hide curve points, though that is definitively a future work.
+
+    
+    \item How exactly is the master secret $\sf{s_{sm}}$ derived, and what is its length? We assume it's randomly selected from $\F_\ell$, but this is not directly stated in Section 5.2. Without a recommended length, it may admit attacks aimed at determining the value of short $\sf{s_{sm}}$, say from side-channel or fault-injection attacks. If possible (it might not be, due to compatibility constraints) we would recommend adding salt to keys in the novel key hierarchy. As it stands, subordinate keys like $\sf{k_{ps}}$ are computed simply as a hash of the master key $\sf{s_{sm}}$ along with padding, so it's perhaps possible for these to be put to malicious use - such as if the master key is imprudently reused, or if two users have short $\sf{s_{vb}}$ keys that match by chance. To this end, it may be helpful to consider formally using a key derivation function \url{https://en.wikipedia.org/wiki/Key_derivation_function} for the subsequent keys. Though endorsing a standard way to generate $\sf{s_{sm}}$ and selecting a key derivation function are likely unenforceable, it would be a best-practice recommendation.
+    
+
+\end{enumerate}
+
+
+
+
+
+
+\section{Security Proofs}\label{sec:proofs}
+
+In this section, we recapitulate the security claims in the \carr specification document and present arguments for those claims.
+After reviewing the security properties in \sect{9}, we propose some slight alterations to a few statements, which we believe strengthens or makes more precise their assertions.
+Below each number and title in bold, the indented paragraphs are what we aim to show, with justification immediately following. 
+
+
+
+\subsection{Balance Recovery Security}
+
+
+\subsubsection{Completeness} 
+
+\begin{quote}
+        An honest sender sending amount $\sf{a}$ and payment ID $\sf{pid}$ to the address $(\sf{K_{s}^j}, \ \sf{K_{v}^j})$ may be assured that an honest receiver who derived the address will, without requiring additional information, 
+    \begin{enumerate}
+        \item recover the same values $\sf{a}$, $\sf{pid}$, and $(\sf{K_{s}^j}, \ \sf{K_{v}^j})$
+    
+        \item recover proper $\sf{x, \ y, \ z}$ such that $\sf{K_o = xG + yT}$ and $\sf{C_a} = \sf{zG} + \sf{aH}$.
+    \end{enumerate}
+\end{quote}
+
+
+To address point 1. we note that in the honest sender - honest receiver model, the shared secret $\sf{s_{sr}}$ (and thus $\sf{s_{sr}^{ctx}}$) obtained from the ephemeral pubkey $\sf{D_e}$ will be accurate. From this, the amount mask $\sf{m_a}$ will be correct, giving that the receiver's nominal amount $\sf{a}'$ will match the true amount $\sf{a}$. The only conceivable way that the receiver could recover a non-matching amount would be that if they or the sender have deviated from the protocol, or else an error has been introduced (in communication, elliptic curve calculation, etc).
+\medskip 
+
+In the same vein, the receiver's reconstruction of $\sf{pid}'$ will match the true $\sf{pid}$, as its encryption mask $\sf{m_{pid}}$ derived from $\sf{s_{sr}^{ctx}}$ will be accurate. So the payment ID will be recovered correctly.
+\medskip 
+
+Because $\sf{s_{sr}^{ctx}}$ matches the genuine value, $\sf{k_{a}}'$ will match $\sf{k_a}$, giving that the nominal $\sf{C_{a}}'$ matches the true $\sf{C_a}$. Hence, both $\sf{k_g^{o}}'$ and $\sf{k_t^{o}}'$ will be authentic, meaning $\sf{K_{s}^{j}}'$ will equal $\sf{K_{s}^j}$. From this, $\sf{K_{v}^{j}}'$ will equal $\sf{K_{v}^j}$ also, so the receiver will recover the same address.
+\medskip 
+
+As for point 2. since $\sf{K_{s}^{j}}'$ has been reconstructed correctly, and $\sf{K_{s}^{j}}' = \sf{K_o} - \sf{k_g^{o}}' \sf{G} - \sf{k_t^{o}}' \sf{T}$, the receiver will recover proper $\sf{x, \ y}$ such that $\sf{K_0 = xG + yT}$.
+\medskip 
+
+We saw above that the the reconstructed values $\sf{k_a}'$ and $\sf{a}'$ are true. Thus, since $\sf{C_{a}}' = \sf{k_a}' \sf{G} + \sf{a}' \sf{T}$, the receiver will recover proper values for the amount commitment. 
+
+
+
+
+
+
+
+\subsubsection{Spend Binding} 
+
+\begin{quote}
+        If an honest receiver recovers $\sf{x, \ y}$ such that $\sf{K_0 = xG + yT}$ for an enote, then no adversary without knowledge of $\sf{k_{ps}}$ (for new key hierarchy; $\sf{k_{s}}$ if on legacy key hierarchy) will be able to recover $\sf{x, \ y}$ up to a security factor. 
+\end{quote}
+
+Since $\sf{K_0}$ is a Pedersen commitment, we automatically get unconditional hiding (even a computationally unbounded adversary cannot efficiently recover $\sf{r_1, \ r_2}$ such that $\sf{K_0 = r_1 G + r_2 T}$). The ``security factor" statement is probably related to discrete log problem, though we don't think it's necessary for Pedersen.
+Note that if this adversary knows the prove-spend key $\sf{k_{ps}}$ (resp. $\sf{k_{s}}$) then this can be used to spend enotes, which necessitates recovering $\sf{x, \ y}$ such that $\sf{K_0 = xG + yT}$.
+
+
+
+
+\subsubsection{Enote Scan Binding} 
+
+\begin{quote}
+        No two honest receivers using different values of $\sf{k_v}$ (for external scans; $\sf{s_{vb}}$ for internal scans) can implement enote scan process for the same enote and return successfully, even if constructed dishonestly.  
+\end{quote}
+
+Suppose $\mathcal{R}_1$ uses $\sf{k_v}$ and $\mathcal{R}_2$ uses $\sfb{k_v}$, distinct. If performing an internal scan, then the scan processes will diverge on \line{26}, where $\sf{K_v^{j}}' = \sf{k_v} \sf{K_{base}}$ and $\sfb{K_v^{j}}' = \sfb{k_v} \sf{K_{base}}$. As $\sf{d_e'}$ relies on the hash of $\sf{K_v^{j}}'$, we obtain two very different values for $\sf{d_e'}$ and $\sfb{d_e'}$. If this discrepancy results in both $\mathcal{R}_1$ and $\mathcal{R}_2$ passing the test $\sf{D_e' == D_e}$ on line 29, then it must be that $\sf{D_e' = \6{D_e'}}$, implying that $\sf{d_e' = \6{d_e'}}$; this violates collision resistance.
+\medskip 
+
+If the scan is internal, then by \sect{7.6} $\sf{s_{sr}}$ and $\sf{s_{vb}}$ are equal. Suppose $\mathcal{R}_1$ uses $\sf{s_{sr}}$ and $\mathcal{R}_2$ uses $\sfb{s_{sr}}$, distinct. Then \line{2} gives $\sf{vt'}$ as the hash of $\sf{s_{sr}}$, so will have a very different value from $\sfb{vt'}$. If both pass the test on line 3, then $\sf{vt'} = \sfb{vt'}$ and we have a hash collision.
+
+
+
+
+
+
+
+
+
+
+
+\subsubsection{Burning Bug Resistance} 
+
+\begin{quote}
+        For any $\sf{K_o}$, it is computationally intractable to find distinct $\sf{input\_context}$ and $\sfb{input\_context}$ such that an honest receiver views both as spendable. 
+\end{quote}
+
+For the scan process, two distinct values for $\sf{input\_context}$ and $\sfb{input\_context}$ will lead to distinct $\sf{vt}'$ and $\sfb{vt}'$. Then \line{3} will return $\sf{ABORT}$, and can only continue the scan process if a hash collision has been found. 
+\medskip
+
+
+To spend, a receiver must know $\sf{z, \ a}$ such that $\sf{C_a = zG + aH}$. Yet, \line{7-9} mean that $\sf{s_{sr}^{ctx}}$ will rederive $\sf{m_a}$ (and thus $\sf{a}'$) and $\sf{k_a}'$. This will then be used to generate $\sf{C_a}'$, which will only avoid the $\sf{ABORT}$ on line 15 if $\sf{C_a} = \sf{C_a}'$. Since the same holds for $\sfb{s_{sr}^{ctx}}$ after rederiving $\sfb{a}'$ and $\sfb{k_a}'$, and hence $\sfb{C_a}'$, both can only pass the test if $\sf{C_a}' = \sfb{C_a}'$. Thus either a hash collision has occurred, or a relationship between linearly independent generators has been found - in contradiction to the hardness of the discrete log problem. Thus, users can be assured that incoming transactions cannot ``burn" their funds.
+
+
+
+
+
+
+
+\subsubsection{Janus (or Pordo) Attack Resistance} 
+
+\begin{quote}
+        There exists no algorithm $\A$ without knowledge of the receiver's private view key $\sf{k_v}$ that permits a sender to construct an enote with two honestly-derived, non-integrated addresses satisfying the following properties: 
+        \begin{enumerate}
+            \item the enote successfully passes the scan process when the addresses were derived from the same account 
+
+            \item the enote fails the scan process when the addresses are unrelated.
+        \end{enumerate}
+        ie: it is computationally intractable to construct an \textit{external} enote which passes the scan such that the Recipient's reconstructed address spend pubkey $\sf{K_{s}^{j}}' = \sf{K_o - k_g^{o} G - k_t^{o} T}$ doesn't match the shared secret $\sf{s_{sr} = 8 \ r \ ConvertPointE(K_s^{j})}$ for some sender-chosen $\sf{r}$.
+        
+\end{quote}
+
+
+Assume the addresses were derived from the same account, and suppose the sender selects $\sf{r} \in \Fp$ at random, then forms $\sfb{s_{sr}} = \sf{8 \ r \ ConvertPointE(K_s^{j})}$. Here, $\sf{r}$ serves as a replacement for the enote's ephemeral private key $\sf{d_e}$, which we should view as uniformly random anyways. (External enotes use Diffie-Hellman solely for incoming private view key $\sf{k_v}$, which the receiver then uses with $\sf{d_e}'$ to nominally construct ephemeral pubkey $\sf{D_e}'$.) This is used to construct $\sfb{s_{sr}^{ctx}}$ on \line{4}, which is used to create $\sfb{K_s^j}'$, then hashed with $\sf{K_o}$ to form $\sfb{m_{anchor}}$, and this is XORed to nominally reconstruct $\sfb{anchor}'$. Since the ephemeral private key $\sf{d_e}$ is a hash digest of values including $\sf{anchor}'$, the nominal rederivation $\sfb{d_e}'$ will be very different from $\sf{d_e}$.
+\medskip 
+
+The attempted reconstruction of the ephemeral public key will then be $\sfb{D_e}' = \sfb{d_e}' \ \sf{ConvertPointE}(\sfb{K_s^j}')$. 
+Note that $\sfb{D_e}' \neq \sf{D_e}$, unless either a hash collision or a discrete log relation has been found, so \line{34} results in $\sfb{anchor_{sp}}$ being distinct from $\sfb{anchor}'$, thus returning $\sf{ABORT}$. Hence, users are protected from the duality of the Janus attack. 
+\bigskip 
+
+As an aside, we point out that along the way we find the check: 
+$$\secr{x} = \sfb{anchor_{sp}} \stackrel{?}{=} \sfb{anchor}' = \sf{anchor_{enc}} \oplus \sfb{m_{anchor}} = \sf{anchor_{enc}} \oplus \secr{y},$$
+for inputs $\sf{x}$ and $\sf{y}$, which can be rewritten as
+$$\secr{x} \oplus \secr{y} \stackrel{?}{=} \sf{anchor_{enc}} \quad \leftarrow \text{ a given value}.$$
+
+This looks \textit{almost} like a hash collision, but is not exactly. See Appendix A of the Micciancio paper \cite{Micciancio} for an example breaking the injectivity of the hash function $H(x_1 \, || \, x_2 \, || \, ... \, || \, x_n) := h(x_1) \, \oplus \, h(x_2) \, \oplus \, ... \, \oplus \, h(x_n)$. Also see \cite{CollisionGenerator} for a use-case. 
+\medskip 
+
+Let us consider an idealized binary hash function $h : \{0, \, 1\}^r \rar \{0, \, 1\}^b$, then build up $\H : \{0, \, 1\}^{nr} \rar \{0, \, 1\}^b$ by $\H(x_1 \, || \, x_2 \, || \, ... \, || \, x_n) := h(x_1) \, \oplus \, h(x_2) \, \oplus \, ... \, \oplus \, h(x_n)$. 
+Suppose that we've collected $m=2^{b/n}$ hashes, where $n$ is the number of hashes being XORed together and $b$ is the hash's output length. 
+Since the hash's range has cardinality $2^b$, but we've accrued $m^n$ sums of the form $h(x_1) \, \oplus \, ... \, \oplus \, h(x_n)$, we can guarantee a collision of the form $\H(x_1' \, || \, ... \, || \, x_n') = \H(x_1 \, || \, ... \, || \, x_n)$. 
+Moreover, we've collected a basis for the vector space $\{0, \, 1\}^b$, so can ``solve" arbitrary hashes just by taking linear combinations of the $h(x_i)$'s. 
+For the case $n=2$, this is simply the birthday paradox \cite{Birthday}, and Wagner's algorithm \cite{Wagner} presents a sub-exponential algorithm solving for any $n$.
+This argument needs better formalizing, but this back-of-the-notebook calculation demonstrates that an adversary collecting enough hashes could potentially be problematic for the \carr protocol.
+
+
+
+
+
+
+
+
+\subsection{Unlinkability}
+
+
+\subsubsection{Computational Address-Address Unlinkability} 
+
+\begin{quote}
+        Any third party can't determine if two non-integrated addresses share the same $\sf{k_v}$ better than simple guessing.
+\end{quote}
+
+With integrated addresses, the payment IDs $\sf{pid}$ and $\sfb{pid}$ won't match up, so this is readily seen. If non-integrated, then the view key $\sf{k_v}$ is hashed to create the address $(\sf{K_s^j}, \ \sf{K_v^j})$, so if any third party can identify this to another address $(\sfb{K_s^j}, \ \sfb{K_v^j})$ with non-negligible probability, either they can find hash collisions or have broken the discrete log problem.
+
+
+
+
+
+\subsubsection{Computational Address-Enote Unlinkability} 
+
+\begin{quote}
+        Any third party can't determine if an address is the destination of a chosen enote better than simple guessing, even if they know the enote's destination address.
+\end{quote}
+
+An enote is sent to the address $(\sf{K_s^j}, \ \sf{K_v^j})$, but contains the output pubkey $\sf{K_o}$ - full knowledge of the opening allows for spending, and partial knowledge permits uncovering the key image which reveals where the enote was spent. 
+As $\sf{K_o} = \sf{K_s^j} + \sf{k_g^{o}} \sf{G} + \sf{k_t^{o}} \sf{T}$, if any third party is able to link $\sf{K_o}$ and $\sf{K_s^j}$, then ostensibly they can open the Pedersen commitment and recover $\sf{x, \ y}$ such that  $\sf{K_o} - \sf{K_s^j} = \sf{xG} + \sf{yT}$. Thus, either they've broken the commitment's unconditional hiding or broken the discrete log problem.
+
+
+
+
+
+\subsubsection{Computational Enote-Enote Unlinkability} 
+
+\begin{quote}
+        Any third party can't determine if two enotes share the same address better than simple guessing, even if they know the destination address.
+\end{quote}
+
+
+Suppose two enotes are sent to the same address, but have different master keys, $\sf{s_{sm}}$ and $\sfb{s_{sm}}$. Unless a hash collision has been found, this will result in distinct values for $\sf{k_{sub\_ext}^j}$ and $\sfb{k_{sub\_ext}^j}$. This means that $\sf{K_s^j}$ and $\sfb{K_s^j}$ will not be the same, except in violation of the discrete log problem. As $\sf{k_v}$ is a hash digest of $\sf{s_{vb}}$, and ultimately the master key $\sf{s_{sm}}$, the two users will have $\sf{k_v} \neq \sfb{k_v}$, resulting in distinct $\sf{K_v^j}$ and $\sfb{K_v^j}$. By working backwards, if a third party is able to connect these two addresses, they must either violate the hardness of the discrete log problem or be able to compute hash collisions.
+
+
+
+
+
+
+
+
+\subsubsection{Computational Enote-Key Image Unlinkability} 
+
+\begin{quote}
+        Any third party can't determine if a given key image is \textit{the} key image for an enote better than simple guessing, even if they know the destination address.
+\end{quote}
+
+Recall that the key image is computed as $\sf{L = (k_{gi} \cdot k_{sub\_scal}^j + k_g^o) \ H_p^2(K_o)}$ where $\sf{k_{sub\_scal}^j} = 1$ if $\sf{j}=0$ and $\scal{s_{gen}^j \ || \ K_s \ || \ K_v \ || \ j}$ else. Here, $\sf{H_p^2(\cdot)}$ is \textit{not} the same hash function used in $\sf{SecretDerive}$, rather it is the second hash-to-point function on the twisted Edwards curve Ed25519.  
+\medskip 
+
+Suppose an adversary can view the public data of an enote ($\sf{K_o, \ vt, \ C_a}$, etc.),
+then determine correctly if said enote is linked to key image $\sf{L = x \ H_p^2(K_o)}$ for $\sf{K_o = xG + yT}$. Then from the information available, they must be able to break the discrete log problem or find a hash-to-point collision, neither of which we assume can be done with any degree of efficiency.
+\medskip 
+
+
+
+
+
+
+
+\subsection{Forward Security}
+
+
+\subsubsection{Address-Conditional Forward Secrecy} 
+
+\begin{quote}
+        Without knowing the receiver's public address, an adversary armed with the extractor algorithm $\E$ from Definition \ref{def:extractor} still cannot determine the receiver, the amount sent, or the destination address.
+\end{quote}
+
+Because 
+$$\sf{K_o = K_s^j + k_g^o G + k_t^o T = K_s^j + \scal{s_{sr}^{ctx} \ || \ C_a} G + \scal{s_{sr}^{ctx} \ || \ C_a} T},$$
+(where recall we suppress the hash padding) we can see that $\sf{C_a}$ is protected by hash collisions even if the adversary knows the address. Even if uncovered, the amount commitment $\sf{C_a}$ is masked by blinding factor $\sf{k_a}$ (excepting in Coinbase transactions).
+\medskip 
+
+The destination address $(\sf{K_s^j}, \ \sf{K_v^j})$ is also safe, because of collision resistance.
+\medskip
+
+
+
+
+
+
+\subsubsection{Internal Forward Secrecy} 
+
+\begin{quote}
+        Even knowing $\sf{s_{ga}, \ k_{ps}, \ k_{gi}, \ k_{v}}$, an adversary armed with extractor algorithm $\E$ from Definition \ref{def:extractor} - but without knowledge of $\sf{s_{vb}}$ - cannot recover internal enote addresses, where or if they have been spent, or the transaction amounts any better than simple guesswork.
+\end{quote}
+
+We point out that the prove-spend key $\sf{k_{ps}}$ and view-balance secret $\sf{s_{vb}}$ are defined as a hash digest of the master secret $\sf{s_m}$, while $\sf{s_{ga}, \ k_{gi}, \text{ and } k_{v}}$ are defined as hash digests of $\sf{s_{vb}}$. If an adversary is armed with the view-all tiered $\sf{s_{vb}}$ (which is equal to $\sf{s_{sr}}$ for internal enotes), then they can find and decode incoming and outgoing enotes, so we assume that they do not know the view-balance secret. In this case, for an internal enote, then an adversary cannot reform a valid $\sf{vt}'$ that passes the check at \line{3} without finding a hash collision.
+\medskip 
+
+Suppose that an adversary has knowledge of $\sf{k_{ps}}, \ \sf{s_{ga}, \ k_{gi}, \text{ and } k_{v}}$. 
+\medskip 
+
+We start by considering the enote's 
+amount. For an internal enote, $\sf{s_{vb}}$ is used to derive $\sf{s_{sr}^{ctx}}$, so without the view-balance secret an adversary will have an incorrect value for their $\sfb{s_{sr}^{ctx}}$, unless a hash collision has been found.
+Thus, $\sfb{m_a}$ will be reconstructed incorrectly, thus the nominal amount $\sfb{a}'$ will not match the true amount, unless a hash collision has occurred. 
+\medskip 
+
+As for an internal enote's address, the incorrect value of $\sfb{s_{sr}^{ctx}}$ will result in $\sfb{k_g^o}'$ and $\sfb{k_t^o}'$ being different from the true values, thus $\sfb{K_s^j}'$ in \line{18} will be incorrect, unless hash collisions have been found.
+\medskip 
+
+To determine where or if it's been spent, one would inspect the key image. By the above, the enote will not appear to an adversary to be spendable. Since the key image is calculated as $\sf{L = (k_{gi} \cdot k_{sub\_scal}^j + k_g^o) \, H_p^2(K_o)}$, but the nominal $\sfb{k_g^o}'$ differs from the sender's value, the enote will not appear to have been spent.
+
+
+
+
+
+
+
+
+\subsection{Indistinguishability}
+
+
+\subsubsection{Transaction output random indistinguishability} \label{TORI} 
+
+\begin{quote}
+        Sample $\sf{r_1, \ r_2} \xleftarrow{\$} [0, \ \ell)$ then form $\sfb{K_o} = \sf{r_1 G}$ and $\sfb{C_a} = \sf{r_2 G}$, where $\sf{G}$ is a generator of $\G_\sf{E}$ and $\ell \approx 2^{252}$. Then $\sfb{K_o}$ and $\sfb{C_a}$ are indistinguishable from the $\sf{K_o}$ and $\sf{C_a}$ obtained by a genuine interaction.
+\end{quote}
+
+
+We believe the proper formulation of this condition is: ``sample $\sf{r_1, \ r_2, \ s_1, \ s_2} \xleftarrow{\$} [0, \ \ell)$ then form $\sfb{K_o} = \sf{r_1 G + s_1 T}$ and $\sfb{C_a} = \sf{r_2 G + s_2 H}$." This is an important distinction, in our opinion, because Pedersen commitments \textit{do} appear random, especially given that the genuine $\sf{K_o}$ and $\sf{C_a}$ have the form $\sf{xG + yT}$ and $\sf{zG + aH}$ (for non-Coinbase transactions) where $\sf{x, \ y, \ z}$ are obtained as hashes - so will appear uniformly at random (up to some hash bias, which we assume is negligible). If an adversary can distinguish between these, they can either break the discrete log problem or find a hash collision.
+\medskip
+
+
+
+
+
+
+
+
+
+
+\subsubsection{Ephemeral pubkey random indistinguishability} 
+
+\begin{quote}
+        Sample $\sf{r} \xleftarrow{\$} [0, \ \ell)$ then form $\sfb{D_e} = \sf{rB}$ where $\sf{B}$ is the generator of the Montgomery curve Curve25519 corresponding to $x=9$. Then this is indistinguishable from a genuine ephemeral pubkey $\sf{D_e}$.
+\end{quote}
+
+
+Recall that $\sf{D_e}$ will be derived differently depending on if the enote is normal to the main address, normal to a subaddress, internal, or special (external, self-send in a 2-out transaction). 
+
+\begin{align*}
+    \text{Normal, to main address} \quad & \quad \sf{d_e B} \\
+    \text{Normal, to subaddress} \quad & \quad \sf{d_e ConvertPointE(K_s^j)} \\
+    \text{Internal} \quad & \quad \xleftarrow{\$} \G_\sf{M} \\ 
+    \text{Special, with other enote normal} \quad & \quad \sf{D_e^{other}} \text{, the other enote's ephemeral pubkey} \\
+    \text{Special, with other enote also special} \quad & \quad \xleftarrow{\$} \G_\sf{M} 
+\end{align*}
+
+One can immediately see that two of these directly sample $\sf{D_e}$ randomly, so will be indistinguishable. An additional two use $\sf{d_e}$, the ephemeral privkey, which is a hash digest, so appear random. The last one left is $\sf{D_e^{other}}$, which - being the ephemeral public key of another enote - will fall under one of the previous possibilities, thus appear random.
+\medskip 
+
+We would welcome a more formalized description about the effects key clamping, or lack thereof, has on this protocol. 
+
+
+
+
+
+\subsubsection{Other enote component random indistinguishability} 
+
+\begin{quote}
+        The following Carrot components will be indistinguishable from their counterparts obtained via a genuine interaction: 
+        \begin{align*}
+            \sf{a_{enc}} &= \sf{RandBytes(8)} \\
+            \sf{anchor_{enc}} &= \sf{RandBytes(16)} \\
+            \sf{vt} &= \sf{RandBytes(3)} \\
+            \sf{pid_{enc}} &= \sf{RandBytes(8)}.
+        \end{align*}
+\end{quote}
+
+Because $\sf{vt}$ is obtained as a hash digest, we may conclude that it will appear uniformly at random. The other three values here are obtained via masking the true values by XORing with a hash digest. ie: $\sf{a_{enc} = a \oplus \secr{s_{sr}^{ctx} \ || \ K_o}}$. This masking with an apparently random value means that the values themselves will appear random, thus all of the genuine values above will be indistinguishable from those acquired through $\sf{RandBytes(\cdot)}$.
+
+
+
+\bibliographystyle{alpha}
+\bibliography{archive.bib}
+\end{document}
